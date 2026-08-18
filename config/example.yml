@@ -1,0 +1,109 @@
+# Copy to config/customer.yml and replace placeholders.
+# Never commit secrets, tokens, or customer-specific production identifiers.
+
+account:
+  id: "<ACCOUNT_ID>"
+  host: "https://accounts.azuredatabricks.net"
+
+# The automation resolves groups by display name and uses the account principal ID
+# in budget overrides.
+groups:
+  - name: "aigw-budget-standard"
+    description: "Standard Unity AI Gateway budget cohort"
+    ensure: true
+  - name: "aigw-budget-elevated"
+    description: "Approved higher budget cohort"
+    ensure: true
+  - name: "aigw-model-users"
+    description: "Users allowed to query the standard model service"
+    ensure: true
+
+budgets:
+  - id: "<EXISTING_BUDGET_ID>"
+    display_name: "<BUDGET_DISPLAY_NAME>"
+    resource_type: "BUDGET_RESOURCE_TYPE_UNITY_AI_GATEWAY"
+    workspace_ids: [<WORKSPACE_ID>]
+    tags:
+      team: ["engineering"]
+      environment: ["production"]
+    # The standard Account Budget API currently models MONTH thresholds.
+    shared_thresholds:
+      - amount_usd: "10000"
+        email_recipients: ["ai-platform@example.com"]
+        block: false
+      - amount_usd: "15000"
+        email_recipients: ["ai-platform@example.com", "finops@example.com"]
+        block: true
+    per_user_threshold:
+      amount_usd: "500"
+      email_recipients: ["ai-platform@example.com"]
+      block: true
+    overrides:
+      - group: "aigw-budget-elevated"
+        amount_usd: "1500"
+
+# Model Services are workspace API resources backed by Unity Catalog.
+# payload is sent to the documented model-services API after plan validation.
+model_services:
+  - workspace_host: "https://adb-<workspace-id>.<region>.azuredatabricks.net"
+    workspace_id: <WORKSPACE_ID>
+    catalog: "<GOVERNED_CATALOG>"
+    schema: "ai"
+    name: "standard-models"
+    ensure: true
+    allow_service_config_replacement: false
+    endpoint_tags:
+      team: "engineering"
+      cost_center: "<COST_CENTER>"
+      cost_tier: "standard"
+    payload:
+      comment: "Standard governed model service"
+      destinations:
+        - name: "primary"
+          model: "system.ai.<MODEL_SERVICE>"
+      routes:
+        strategy: "fallback"
+        destinations: ["primary"]
+      rate_limits:
+        qpm: 300
+        tpm: 100000
+
+# Model service access is managed through Unity Catalog grants.
+# This accelerator plans grants and applies only explicitly declared grants.
+grants:
+  - workspace_host: "https://adb-<workspace-id>.<region>.azuredatabricks.net"
+    workspace_id: <WORKSPACE_ID>
+    securable_type: "model_service"
+    full_name: "<GOVERNED_CATALOG>.ai.standard-models"
+    grants:
+      - principal: "aigw-model-users"
+        privileges: ["EXECUTE"]
+      - principal: "aigw-platform-admins"
+        privileges: ["MANAGE"]
+
+# Optional external provider service. Keep provider credentials out of Git;
+# use the supported connection/secret reference fields for the target API.
+model_provider_services:
+  # - workspace_host: "https://adb-<workspace-id>.<region>.azuredatabricks.net"
+  #   workspace_id: <WORKSPACE_ID>
+  #   catalog: "<GOVERNED_CATALOG>"
+  #   schema: "ai"
+  #   name: "approved-anthropic"
+  #   payload: {}
+
+# Governed tags are account-level definitions. Assignment to Model Services is
+# capability-gated; ordinary endpoint_tags above remain the supported baseline.
+governed_tags:
+  # Definitions and assignments are intentionally not applied by the baseline.
+  # Complete them only after verifying the target account supports model_service
+  # governed-tag assignments and the corresponding API/SDK surface.
+  - key: "cost_tier"
+    description: "Approved service cost tier"
+    allowed_values: ["standard", "elevated", "exception"]
+    ensure: false
+
+# Daily/runaway controls are deliberately disabled until the target account has
+# a supported capability/API. Use service rate limits for burst protection first.
+runaway_budget:
+  enabled: false
+  mode: "capability-gated"
