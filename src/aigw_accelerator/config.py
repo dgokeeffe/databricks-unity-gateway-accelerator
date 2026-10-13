@@ -28,6 +28,14 @@ ALLOWED_WORKSPACE_SUFFIXES = (
 )
 
 
+def _contains_key(value: Any, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value or any(_contains_key(item, key) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_key(item, key) for item in value)
+    return False
+
+
 def _validate_host(value: Any, *, account: bool) -> None:
     parsed = urlparse(str(value))
     hostname = (parsed.hostname or "").lower().rstrip(".")
@@ -268,6 +276,12 @@ def validate_config(data: dict[str, Any]) -> None:
             )
 
     for provider in data.get("model_provider_services", []):
+        for key in ("payload", "update_payload"):
+            if _contains_key(provider.get(key), "plaintext"):
+                raise ConfigError(
+                    f"model provider {key} must not contain inline 'plaintext' credentials; "
+                    "use service_credential or secret_reference"
+                )
         if provider.get("update_payload") and not provider.get("update_mask"):
             raise ConfigError(
                 "model provider update_payload requires a non-empty update_mask"

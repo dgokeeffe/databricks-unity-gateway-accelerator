@@ -11,6 +11,13 @@ from typing import Any, Callable
 
 from .account import AccountAutomation, make_account_client
 from .config import ConfigError, load_config
+from .gateway import (
+    body_for,
+    is_ga_service,
+    provider_drift,
+    reasoning_api_warnings,
+    service_drift,
+)
 from .reconcile import (
     format_plan,
     plan_budget,
@@ -219,10 +226,16 @@ def build_plan(config: dict[str, Any]) -> str:
             make_workspace_client(service["workspace_host"], service.get("profile")), int(service["workspace_id"])
         )
         existing = workspace.list_model_services(service["catalog"], service["schema"])
-        plan_lines.append(
-            f"Model services {service['workspace_host']}:\n"
-            f"{format_plan(plan_model_services([service], existing))}"
-        )
+        text = format_plan(plan_model_services([service], existing))
+        qualified = ".".join([service["catalog"], service["schema"], service["name"]])
+        if is_ga_service(service) and any(item.get("name") == qualified for item in existing):
+            drift = service_drift(service, workspace.get_model_service(qualified))
+            if drift:
+                gate = "" if service.get("allow_service_config_replacement") else (
+                    " (BLOCKED: set allow_service_config_replacement after review)"
+                )
+                text = f"UPDATE     model_service:{qualified}: {', '.join(drift)}{gate}"
+        plan_lines.append(f"Model services {service['workspace_host']}:\n{text}")
 
     for provider in config.get("model_provider_services", []):
         workspace = WorkspaceAutomation(
@@ -233,10 +246,23 @@ def build_plan(config: dict[str, Any]) -> str:
         )
         qualified = ".".join([provider["catalog"], provider["schema"], provider["name"]])
         current = next((item for item in existing if item.get("name") == qualified), None)
-        action = "create" if current is None else "reconcile"
-        plan_lines.append(
-            f"{action.upper()} model provider service {provider['workspace_host']}: {qualified}"
-        )
+        host = provider["workspace_host"]
+        if current is None:
+            plan_lines.append(f"CREATE model provider service {host}: {qualified}")
+        else:
+            drift = provider_drift(provider, workspace.get_model_provider_service(qualified))
+            if drift:
+                gate = "" if provider.get("allow_service_config_replacement") else (
+                    " (BLOCKED: set allow_service_config_replacement after review)"
+                )
+                plan_lines.append(
+                    f"UPDATE model provider service {host}: {qualified}: "
+                    f"{', '.join(drift)}{gate}"
+                )
+            else:
+                plan_lines.append(f"No changes: model provider service {host}: {qualified}")
+    for warning in reasoning_api_warnings(config):
+        plan_lines.append(f"WARNING: {warning}")
 
     for grant in config.get("grants", []):
         plan_lines.append(
@@ -384,17 +410,18 @@ def _apply_services_and_grants(config: dict[str, Any]) -> None:
                 }
             )
             workspace.create_model_provider_service(payload)
-        elif provider.get("update_payload"):
-            if not provider.get("allow_service_config_replacement"):
-                raise ConfigError(
-                    f"Refusing to replace existing provider configuration on {qualified}; "
-                    "set allow_service_config_replacement after review"
+        else:
+            # Only PATCH declared fields that actually differ (idempotent apply).
+            drift = provider_drift(provider, workspace.get_model_provider_service(qualified))
+            if drift:
+                if not provider.get("allow_service_config_replacement"):
+                    raise ConfigError(
+                        f"Refusing to replace existing provider configuration on {qualified}; "
+                        "set allow_service_config_replacement after review"
+                    )
+                workspace.update_model_provider_service(
+                    qualified, body_for(drift), list(drift)
                 )
-            workspace.update_model_provider_service(
-                qualified,
-                provider["update_payload"],
-                provider.get("update_mask", []),
-            )
 
     for service in config.get("model_services", []):
         workspace = WorkspaceAutomation(
@@ -415,6 +442,16 @@ def _apply_services_and_grants(config: dict[str, Any]) -> None:
             if service.get("endpoint_tags"):
                 payload["endpoint_tags"] = service["endpoint_tags"]
             workspace.create_model_service(payload)
+        elif is_ga_service(service):
+            drift = service_drift(service, workspace.get_model_service(qualified))
+            if drift:
+                if not service.get("allow_service_config_replacement"):
+                    raise ConfigError(
+                        f"Refusing to replace {', '.join(drift)} on {qualified}; "
+                        "set allow_service_config_replacement after review"
+                    )
+                workspace.update_model_service(qualified, body_for(drift), list(drift))
+            _ensure_inference_table(workspace, qualified, service)
         else:
             update_fields: list[str] = []
             update_config: dict[str, Any] = {}
@@ -698,6 +735,9 @@ def verify_config(config: dict[str, Any]) -> list[str]:
             actual_limits = current.get("rate_limits", actual_config.get("rate_limits"))
             if expected_limits and actual_limits != expected_limits:
                 failures.append(f"drifted rate_limits: {service['workspace_host']} {qualified}")
+            if is_ga_service(service):
+                for path in service_drift(service, workspace.get_model_service(qualified)):
+                    failures.append(f"drifted {path}: {service['workspace_host']} {qualified}")
 
     for provider in config.get("model_provider_services", []):
         workspace = WorkspaceAutomation(
@@ -714,6 +754,10 @@ def verify_config(config: dict[str, Any]) -> list[str]:
             failures.append(
                 f"missing model provider service: {provider['workspace_host']} {qualified}"
             )
+        else:
+            current = workspace.get_model_provider_service(qualified)
+            for path in provider_drift(provider, current):
+                failures.append(f"drifted {path}: {provider['workspace_host']} {qualified}")
 
     for grant in config.get("grants", []):
         match = next(

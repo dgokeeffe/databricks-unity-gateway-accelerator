@@ -10,3 +10,4 @@ plan-output/
 
 *.egg-info/
 config/daveok.yml
+config/daveok-foundry.yml

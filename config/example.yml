@@ -131,13 +131,43 @@ grants:
 
 # Optional external provider service. Keep provider credentials out of Git;
 # use the supported connection/secret reference fields for the target API.
+# Inline `plaintext` credentials are rejected by validation; use a Unity Catalog
+# service credential (Azure) or `secret_reference`. Azure prerequisites are in
+# docs/microsoft-foundry.md.
 model_provider_services:
+  # Microsoft Foundry with a UC service credential (no stored secret).
   # - workspace_host: "https://adb-<workspace-id>.<region>.azuredatabricks.net"
   #   workspace_id: <WORKSPACE_ID>
   #   catalog: "<GOVERNED_CATALOG>"
   #   schema: "ai"
-  #   name: "approved-anthropic"
-  #   payload: {}
+  #   name: "foundry_prod"
+  #   # Changing targets on an existing provider requires this opt-in;
+  #   # plan shows only the fields that differ.
+  #   allow_service_config_replacement: false
+  #   payload:
+  #     config:
+  #       provider_type: "EXTERNAL_MODEL_PROVIDER_TYPE_MICROSOFT_FOUNDRY"
+  #       microsoft_foundry:
+  #         direct:
+  #           base_url: "https://<foundry-resource>.services.ai.azure.com/"
+  #           service_credential:
+  #             name: "credentials/<SERVICE_CREDENTIAL>"
+  #       allow_all_targets: false
+  #       targets:
+  #         # Reasoning models (gpt-5.x / gpt-6.x / o-series) reject function
+  #         # tools with reasoning_effort on chat/completions: include responses.
+  #         - model: "<DEPLOYMENT_NAME>"
+  #           native_api_types: ["openai/v1/chat/completions", "openai/v1/responses"]
+  #
+  # A model service routing to that provider:
+  # model_services entry payload.config.routing.destinations:
+  #   - name: "foundry-primary"
+  #     destination_type: "DESTINATION_TYPE_EXTERNAL_FOUNDATION_MODEL"
+  #     external_model_config:
+  #       model_provider_service: "model-provider-services/<GOVERNED_CATALOG>.ai.foundry_prod"
+  #       target:
+  #         model: "<DEPLOYMENT_NAME>"
+  #         native_api_types: ["openai/v1/chat/completions", "openai/v1/responses"]
 
 # Governed tags are account-level definitions. Assignment to Model Services is
 # capability-gated; ordinary endpoint_tags above remain the supported baseline.

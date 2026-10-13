@@ -14,14 +14,46 @@ class WorkspaceAutomation:
     def _headers(self) -> dict[str, str]:
         return {"x-databricks-workspace-id": str(self.workspace_id)}
 
-    def list_model_services(self, catalog: str, schema: str) -> list[dict[str, Any]]:
-        response = self.client.api_client.do(
-            "GET",
-            "/api/2.2/unity-catalog/model-services",
-            query={"catalog_name": catalog, "schema_name": schema},
-            headers={"Accept": "application/json", **self._headers()},
+    def _list(self, collection: str, catalog: str, schema: str) -> list[dict[str, Any]]:
+        """List a GA AI Gateway collection, paginating and normalising names.
+
+        The API returns ``{collection}/{catalog}.{schema}.{name}``; callers compare
+        against the bare three-part name, so the prefix is stripped here.
+        """
+        items: list[dict[str, Any]] = []
+        query: dict[str, Any] = {"parent": f"schemas/{catalog}.{schema}", "page_size": 200}
+        while True:
+            response = self.client.api_client.do(
+                "GET",
+                f"/api/2.1/unity-catalog/{collection}",
+                query=query,
+                headers={"Accept": "application/json", **self._headers()},
+            )
+            for item in response.get(collection.replace("-", "_"), []):
+                name = item.get("name", "")
+                if name.startswith(f"{collection}/"):
+                    item = {**item, "name": name[len(collection) + 1 :]}
+                items.append(item)
+            token = response.get("next_page_token")
+            if not token:
+                return items
+            query = {**query, "page_token": token}
+
+    def _create(self, collection: str, id_param: str, payload: dict[str, Any]) -> dict[str, Any]:
+        body = dict(payload)
+        catalog = body.pop("catalog_name")
+        schema = body.pop("schema_name")
+        service_id = body.pop("name")
+        return self.client.api_client.do(
+            "POST",
+            f"/api/2.1/unity-catalog/{collection}",
+            query={"parent": f"schemas/{catalog}.{schema}", id_param: service_id},
+            body=body,
+            headers={"Content-Type": "application/json", **self._headers()},
         )
-        return response.get("model_services", response.get("services", []))
+
+    def list_model_services(self, catalog: str, schema: str) -> list[dict[str, Any]]:
+        return self._list("model-services", catalog, schema)
 
     def get_model_service(self, qualified_name: str) -> dict[str, Any]:
         if any(part in qualified_name for part in ("/", "\\", "..")):
@@ -34,29 +66,23 @@ class WorkspaceAutomation:
         )
 
     def create_model_service(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.client.api_client.do(
-            "POST",
-            "/api/2.2/unity-catalog/model-services",
-            body=payload,
-            headers={"Content-Type": "application/json", **self._headers()},
-        )
+        return self._create("model-services", "model_service_id", payload)
 
     def list_model_provider_services(self, catalog: str, schema: str) -> list[dict[str, Any]]:
-        response = self.client.api_client.do(
+        return self._list("model-provider-services", catalog, schema)
+
+    def get_model_provider_service(self, qualified_name: str) -> dict[str, Any]:
+        if any(part in qualified_name for part in ("/", "\\", "..")):
+            raise ValueError(f"Invalid model provider service name: {qualified_name!r}")
+        resource = f"model-provider-services/{quote(qualified_name, safe='.') }"
+        return self.client.api_client.do(
             "GET",
-            "/api/2.2/unity-catalog/model-provider-services",
-            query={"catalog_name": catalog, "schema_name": schema},
+            f"/api/2.1/unity-catalog/{resource}",
             headers={"Accept": "application/json", **self._headers()},
         )
-        return response.get("model_provider_services", response.get("services", []))
 
     def create_model_provider_service(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.client.api_client.do(
-            "POST",
-            "/api/2.2/unity-catalog/model-provider-services",
-            body=payload,
-            headers={"Content-Type": "application/json", **self._headers()},
-        )
+        return self._create("model-provider-services", "model_provider_service_id", payload)
 
     def update_model_service(
         self, qualified_name: str, model_service: dict[str, Any], update_mask: list[str]
@@ -65,14 +91,12 @@ class WorkspaceAutomation:
         if any(part in qualified_name for part in ("/", "\\", "..")):
             raise ValueError(f"Invalid model service name: {qualified_name!r}")
         resource = f"model-services/{quote(qualified_name, safe='.') }"
-        body = {
-            "model_service": model_service,
-            "update_mask": ",".join(update_mask),
-        }
+        # GA API: resource object is the body; update_mask is a query parameter.
         return self.client.api_client.do(
             "PATCH",
             f"/api/2.1/unity-catalog/{resource}",
-            body=body,
+            query={"update_mask": ",".join(update_mask)},
+            body=model_service,
             headers={"Content-Type": "application/json", **self._headers()},
         )
 
@@ -100,10 +124,8 @@ class WorkspaceAutomation:
         return self.client.api_client.do(
             "PATCH",
             f"/api/2.1/unity-catalog/{resource}",
-            body={
-                "model_provider_service": provider_service,
-                "update_mask": ",".join(update_mask),
-            },
+            query={"update_mask": ",".join(update_mask)},
+            body=provider_service,
             headers={"Content-Type": "application/json", **self._headers()},
         )
 

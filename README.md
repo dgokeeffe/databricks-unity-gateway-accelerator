@@ -45,9 +45,11 @@ src/aigw_accelerator/
   webapp.py                         # FastAPI operator-console routes
   web/                              # single-file vanilla-JS UI assets
   workspace.py                      # Gateway, grants and tag API adapters
+  gateway.py                        # GA service/provider drift + reasoning-API warnings
   reconcile.py                      # pure desired/current diff logic
 tests/                              # deterministic unit/safety tests
 docs/miniwiki.md                    # customer-facing implementation plan
+docs/microsoft-foundry.md           # Foundry provider runbook (service credential, Responses API)
 ```
 
 ## Prerequisites
@@ -109,6 +111,10 @@ The baseline fails closed for governed-tag definitions or assignments rather tha
 - Provisioned-throughput and external-model budget coverage must be confirmed for the customer account.
 - Model Service API schemas evolve; the adapter keeps raw payloads configurable and validates the target API before apply.
 - Governed-tag support for Model Services is capability-gated because public tagging documentation and AI Gateway metadata APIs may not have identical rollout coverage.
+
+## External model providers (Microsoft Foundry)
+
+See [`docs/microsoft-foundry.md`](docs/microsoft-foundry.md) for registering an Azure AI Foundry deployment as a model provider service with a Unity Catalog service credential. Reasoning models need `openai/v1/responses` for tool calls; `plan` warns when it is missing.
 
 ## UC function as an agent tool
 

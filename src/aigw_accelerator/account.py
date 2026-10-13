@@ -154,6 +154,11 @@ class AccountAutomation:
                 f"Expected one account workspace for id {workspace_id}, found {len(matches)}"
             )
         actual_host = getattr(matches[0], "workspace_url", None)
+        deployment = getattr(matches[0], "deployment_name", None)
+        if not actual_host and deployment and "azure" in str(getattr(matches[0], "cloud", "")):
+            # Azure account metadata omits workspace_url; the canonical host is
+            # derived from deployment_name. Exact match is still required below.
+            actual_host = f"https://{deployment}.azuredatabricks.net"
         if not actual_host:
             raise ValueError(
                 f"account metadata has no workspace URL for {workspace_id}; "
