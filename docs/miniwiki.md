@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This accelerator provides a repeatable, reviewable path to configure Unity AI Gateway budgets, model services, service tags, grants, and governed-tag metadata where supported.
+This accelerator provides a repeatable, reviewable path to configure Unity AI Gateway monthly budgets, daily/runaway tier policies, model services, service tags, grants, and governed-tag metadata where supported. The accompanying FastAPI console is demo-first and customer-configured; it contains no employee/org data or internal budget-status endpoints.
 
 It is designed to be run from CI or a controlled operator workstation using an account-level service principal and workspace-level identities.
 
@@ -28,10 +28,10 @@ It is designed to be run from CI or a controlled operator workstation using an a
 ### Capability-gated scope
 
 - Governed-tag definitions and assignments are documented but not applied by the baseline
-- Daily/runaway budget workflows
+- Native daily-period budgets (not exposed by the standard budget API; the runaway control uses a second monthly budget instead)
 - Legacy endpoint disablement
 
-These items are deliberately guarded because availability can vary by cloud, account ring, API version, or preview enrollment.
+The public app includes a separate daily tier policy implementation: a configurable ladder of account groups, tier selection, and SCIM membership moves. Daily spend is estimated from public system tables and is not an enforcement signal. These capability boundaries are deliberate because APIs and rollout can vary by cloud, account ring, and version.
 
 ## Operating model
 
@@ -84,7 +84,7 @@ The budget API resolves group overrides using account principal IDs. The acceler
 
 ## Budget implementation
 
-The baseline budget is monthly because that is the standard Account Budget API time period exposed by the SDK.
+The native baseline budget is monthly because Unity Gateway's documented Account Budget API models monthly thresholds.
 
 The accelerator supports:
 
@@ -96,7 +96,9 @@ The accelerator supports:
 - Email notifications
 - Blocking
 
-A daily/runaway behavior is not assumed to be a native customer API. Until Databricks confirms a supported capability, use model-service QPM/TPM limits for rapid burst protection and keep daily/runaway automation disabled in configuration.
+The runaway limit is a second monthly-period budget (`role: runaway`) over the same scope as the monthly budget. Its per-user overrides form the tier ladder, so the gateway enforces it natively; config validation requires `daily_raise.tiers` to match those overrides exactly. `daily_raise` declares customer-owned group names, dollar rungs, and a raise trigger (default: under $100 remaining). A raise is eligible only when the monthly cap has not been reached and the required spend values are known. The next rung is the first configured limit at or above `current daily spend + monthly cap / monthly_to_daily_divisor` (default divisor: 15), and the group-move helper adds target membership before removing older tier memberships.
+
+For the public implementation, daily and month-to-date spend estimates use documented system tables: `system.billing.usage` joined to `system.billing.list_prices` for Databricks-hosted models, and `system.ai_gateway.external_model_spend` for external-model estimates. These tables refresh on different schedules. Estimates may lag and differ from native budget counters, so they are used only to choose a tier. Enforcement comes from the runaway and monthly budgets' blocking thresholds, plus Model Service QPM/TPM limits.
 
 ## Model Service setup
 
@@ -212,7 +214,8 @@ Verification queries:
 ## Known limitations
 
 - Budget enforcement is near real time and approximate; it is not an absolute invoice cap.
-- The current SDK budget model exposes monthly thresholds, not a general daily period.
+- The standard SDK budget model exposes monthly thresholds, not a daily period; the runaway control is a second monthly budget with tiered overrides.
+- Public system-table daily/month-to-date estimates can lag and are not the enforcement counter for native budgets.
 - External-model and provisioned-throughput budget coverage must be confirmed for the target account.
 - Governed-tag support on Model Services may depend on API rollout and must be capability-tested.
 - Model Service API request/response schemas are subject to preview/GA evolution; pin the SDK and validate the API before production apply.

@@ -43,6 +43,6 @@ def test_runaway_budget_is_rejected_until_capability_is_confirmed():
     try:
         validate_config(config)
     except ConfigError as exc:
-        assert "capability" in str(exc)
+        assert "role: runaway" in str(exc)
     else:
-        raise AssertionError("runaway budget should be capability-gated")
+        raise AssertionError("native daily runaway_budget should be rejected")

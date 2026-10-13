@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import yaml
+
+from .daily import DailyTierError, normalize_tiers
 
 
 class ConfigError(ValueError):
@@ -41,8 +44,14 @@ def load_config(path: str | Path) -> dict[str, Any]:
     source = Path(path)
     if not source.exists():
         raise ConfigError(f"Configuration file does not exist: {source}")
-    with source.open(encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
+    return parse_config_text(source.read_text(encoding="utf-8"))
+
+
+def parse_config_text(text: str) -> dict[str, Any]:
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"invalid YAML: {exc}") from exc
     if not isinstance(data, dict):
         raise ConfigError("Configuration root must be a mapping")
     validate_config(data)
@@ -54,8 +63,8 @@ def _amount(value: Any, field: str) -> str:
         number = float(value)
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"{field} must be a positive numeric amount") from exc
-    if number <= 0:
-        raise ConfigError(f"{field} must be greater than zero")
+    if not math.isfinite(number) or number <= 0:
+        raise ConfigError(f"{field} must be a positive finite number")
     return str(value)
 
 
@@ -66,7 +75,80 @@ def _validate_threshold(item: dict[str, Any], field: str) -> None:
             raise ConfigError(f"{field}.email_recipients contains an invalid address")
 
 
+BUDGET_ROLES = {"monthly", "runaway"}
+
+
+def _scope(budget: dict[str, Any]) -> tuple[Any, Any]:
+    # str(): example configs keep unresolved "<WORKSPACE_ID>" placeholders.
+    workspaces = tuple(sorted(str(v) for v in budget.get("workspace_ids", []) or []))
+    tags = tuple(
+        sorted((k, tuple(sorted(v))) for k, v in (budget.get("tags") or {}).items())
+    )
+    return workspaces, tags
+
+
+def _validate_budget_roles(data: dict[str, Any]) -> None:
+    """Validate the monthly + runaway budget pair.
+
+    The runaway ("daily") budget is a second *monthly-period* Unity AI Gateway
+    budget over the same scope. Its per-user overrides form a tier ladder of
+    month-to-date caps; a raise moves the user into the next tier group. The
+    daily_raise ladder and the runaway budget's overrides must therefore be the
+    same set of (group, amount) pairs, or the policy would place users in a
+    group whose enforced threshold differs from what the policy expects.
+    """
+    budgets = data.get("budgets", [])
+    for budget in budgets:
+        role = budget.get("role", "monthly")
+        if role not in BUDGET_ROLES:
+            raise ConfigError(f"budget.role must be one of {sorted(BUDGET_ROLES)}")
+    runaway = [b for b in budgets if b.get("role") == "runaway"]
+    monthly = [b for b in budgets if b.get("role", "monthly") == "monthly"]
+    if len(runaway) > 1:
+        raise ConfigError("declare at most one budget with role: runaway")
+    daily_raise = data.get("daily_raise") or {}
+    if daily_raise.get("enabled") and not runaway:
+        raise ConfigError("enabled daily_raise requires a budget with role: runaway")
+    if not runaway:
+        return
+    budget = runaway[0]
+    if not budget.get("per_user_threshold"):
+        raise ConfigError("the runaway budget needs a per_user_threshold (the base tier)")
+    if monthly and any(_scope(m) != _scope(budget) for m in monthly):
+        raise ConfigError(
+            "the runaway budget must have the same workspace_ids/tags scope as the monthly budget"
+        )
+    base = float(budget["per_user_threshold"]["amount_usd"])
+    overrides = {
+        (o["group"], float(o["amount_usd"])) for o in budget.get("overrides", [])
+    }
+    if any(amount <= base for _, amount in overrides):
+        raise ConfigError("runaway tier overrides must all be above the base per-user threshold")
+    if daily_raise.get("enabled"):
+        ladder = {
+            (t["group"], float(t["limit_usd"])) for t in daily_raise.get("tiers", [])
+        }
+        if ladder != overrides:
+            raise ConfigError(
+                "daily_raise.tiers must match the runaway budget overrides exactly "
+                "(same groups and amounts)"
+            )
+
+
 def validate_config(data: dict[str, Any]) -> None:
+    for key in (
+        "groups",
+        "budgets",
+        "model_services",
+        "model_provider_services",
+        "grants",
+        "governed_tags",
+    ):
+        if data.get(key) is None:
+            data[key] = []
+        elif not isinstance(data[key], list):
+            raise ConfigError(f"{key} must be a list")
+
     account = data.get("account")
     if not isinstance(account, dict) or not account.get("id") or not account.get("host"):
         raise ConfigError("account.id and account.host are required")
@@ -74,12 +156,56 @@ def validate_config(data: dict[str, Any]) -> None:
     if any(part in str(account["id"]) for part in ("/", "\\", "..")):
         raise ConfigError("account.id contains invalid path characters")
 
-    runaway = data.get("runaway_budget", {})
+    runaway = data.get("runaway_budget") or {}
+    if not isinstance(runaway, dict):
+        raise ConfigError("runaway_budget must be a mapping")
     if runaway.get("enabled"):
         raise ConfigError(
-            "runaway_budget.enabled is not supported by the standard budget API; "
-            "confirm a supported account capability before enabling it"
+            "runaway_budget.enabled (a native daily-period budget) is not supported by the "
+            "standard budget API; declare the runaway budget under budgets with "
+            "role: runaway instead"
         )
+
+    daily_raise = data.get("daily_raise", {})
+    if not isinstance(daily_raise, dict):
+        raise ConfigError("daily_raise must be a mapping")
+    if daily_raise:
+        enabled = daily_raise.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ConfigError("daily_raise.enabled must be a boolean")
+        divisor = daily_raise.get("monthly_to_daily_divisor", 15)
+        try:
+            divisor_number = float(divisor)
+            if not math.isfinite(divisor_number) or divisor_number <= 0:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise ConfigError("daily_raise.monthly_to_daily_divisor must be positive") from exc
+        trigger = daily_raise.get("raise_trigger_remaining_usd", 100)
+        try:
+            trigger_number = float(trigger)
+            if not math.isfinite(trigger_number) or trigger_number <= 0:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise ConfigError("daily_raise.raise_trigger_remaining_usd must be positive") from exc
+        tiers = daily_raise.get("tiers", [])
+        if not isinstance(tiers, list):
+            raise ConfigError("daily_raise.tiers must be a list")
+        try:
+            normalized_tiers = normalize_tiers(tiers) if tiers else []
+        except DailyTierError as exc:
+            raise ConfigError(f"invalid daily_raise tiers: {exc}") from exc
+        if enabled and not normalized_tiers:
+            raise ConfigError("enabled daily_raise requires at least one configured tier")
+        if enabled:
+            configured_groups = {
+                item.get("name") for item in data.get("groups", []) if isinstance(item, dict)
+            }
+            missing_groups = sorted({tier.group for tier in normalized_tiers} - configured_groups)
+            if missing_groups:
+                raise ConfigError(
+                    "daily_raise tier groups must also be declared under groups: "
+                    + ", ".join(missing_groups)
+                )
 
     for budget in data.get("budgets", []):
         if not isinstance(budget, dict):
@@ -98,6 +224,15 @@ def validate_config(data: dict[str, Any]) -> None:
             if not override.get("group"):
                 raise ConfigError(f"budget.overrides[{index}].group is required")
             _amount(override.get("amount_usd"), f"budget.overrides[{index}].amount_usd")
+
+    for group in data.get("groups", []):
+        members = group.get("members", []) if isinstance(group, dict) else []
+        if not isinstance(members, list) or any(
+            not isinstance(m, str) or "@" not in m or '"' in m for m in members
+        ):
+            raise ConfigError(f"groups[{group.get('name')}].members must be a list of user emails")
+
+    _validate_budget_roles(data)
 
     for service in data.get("model_services", []) + data.get("model_provider_services", []):
         _validate_host(service.get("workspace_host"), account=False)

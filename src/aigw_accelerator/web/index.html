@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Unity AI Gateway Governance Console</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Governance Console home">
+          <span class="brand-mark">A</span>
+          <span>AI GATEWAY <b>GOVERNANCE</b></span>
+        </a>
+        <div class="top-meta">
+          <span id="environment" class="env-pill">DEMO</span>
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="connection-label">Synthetic preview</span>
+        </div>
+      </header>
+
+      <aside class="rail" aria-label="Main navigation">
+        <button class="nav-item active" data-view="overview"><span>◫</span> Overview</button>
+        <button class="nav-item" data-view="configuration"><span>⌘</span> Configuration</button>
+        <button class="nav-item" data-view="tiers"><span>≡</span> Tiers</button>
+        <button class="nav-item" data-view="implementation"><span>↗</span> How it works</button>
+        <div class="rail-bottom">UNITY AI GATEWAY<br /><span>GOVERNANCE ACCELERATOR</span></div>
+      </aside>
+
+      <main class="content">
+        <section id="overview" class="view active">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">BUDGET CONTROL PLANE <span id="today-label"></span></p>
+              <h1>Spend with<br /><em>guardrails.</em></h1>
+              <p class="lede">Review budget posture, understand the daily tier ladder, and reconcile your Unity AI Gateway configuration.</p>
+            </div>
+            <div class="heading-note"><span class="note-index">01</span><span>PLAN FIRST.<br />APPLY ONLY AFTER REVIEW.</span></div>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card monthly-card">
+              <div class="card-top"><span class="eyebrow">MONTHLY BUDGET</span><span class="source-tag">NATIVE CONTROL</span></div>
+              <div class="metric-row"><strong id="monthly-spend">—</strong><span id="monthly-cap-label">of —</span></div>
+              <div class="progress"><span id="monthly-progress"></span></div>
+              <div class="metric-foot"><span id="monthly-remaining">— remaining</span><span id="monthly-period">month-to-date</span></div>
+            </article>
+            <article class="metric-card daily-card">
+              <div class="card-top"><span class="eyebrow">DAILY RUNAWAY TIER</span><span class="source-tag estimate">ESTIMATE</span></div>
+              <div class="metric-row"><strong id="daily-spend">—</strong><span id="daily-cap-label">of —</span></div>
+              <div class="progress daily-progress"><span id="daily-progress"></span></div>
+              <div class="metric-foot"><span id="daily-remaining">— remaining</span><span id="daily-period">today UTC</span></div>
+            </article>
+          </div>
+
+          <div class="dashboard-grid">
+            <section class="panel usage-panel">
+              <div class="panel-heading">
+                <div><p class="eyebrow">TIER MECHANISM</p><h2>Daily allowance ladder</h2></div>
+                <span class="section-index">A / 02</span>
+              </div>
+              <p class="panel-copy">A daily raise moves a principal to a higher configured group override when daily remaining capacity falls below the trigger and monthly spend is still under cap. The next tier is the first rung at or above current daily spend plus one-fifteenth of the monthly cap.</p>
+              <div class="tier-track" id="tier-track" aria-label="Configured daily budget tiers"></div>
+              <div class="formula"><span>RAISE FLOOR</span><code id="raise-floor">daily spend + monthly cap / 15</code></div>
+              <div class="move-preview" id="move-preview">
+                <div class="move-label" id="move-label">EXAMPLE GROUP MOVE · NO ACTION TAKEN</div>
+                <div class="move-flow"><code id="from-group">daily-tier-current</code><span>→</span><code id="to-group">daily-tier-next</code></div>
+                <p id="move-detail">SCIM adds the target tier group first, then removes the old configured tier group. No group membership is changed by this preview.</p>
+              </div>
+              <p class="caveat"><b>Signal caveat</b> — daily spend shown from public system tables is estimated and may lag. It is not the native Gateway enforcement counter or a hard-stop signal.</p>
+            </section>
+
+            <section class="panel ops-panel">
+              <div class="panel-heading">
+                <div><p class="eyebrow">RECONCILIATION</p><h2>Desired state</h2></div>
+                <span class="section-index">B / 02</span>
+              </div>
+              <p class="panel-copy">Use the accelerator configuration to plan monthly budgets, budget groups, model services, tags, and grants.</p>
+              <div class="ops-row"><span class="ops-icon">01</span><div><b>Validate configuration</b><small>Check YAML and policy safety</small></div><button class="text-button" data-go="configuration">OPEN ↗</button></div>
+              <div class="ops-row"><span class="ops-icon">02</span><div><b>Review a plan</b><small>Discover current state before writes</small></div><button class="text-button" data-action="plan">PLAN ↗</button></div>
+              <div class="ops-row"><span class="ops-icon">03</span><div><b>Verify drift</b><small>Compare declared and live state</small></div><button class="text-button" data-action="verify">VERIFY ↗</button></div>
+              <p class="small-caveat">App-side apply is disabled in demo mode. Live apply requires an admin allowlist, explicit confirmation, and a durable UC Volume audit destination.</p>
+            </section>
+          </div>
+          <section class="panel live-spend-panel" id="live-spend-panel" hidden>
+            <div class="panel-heading"><div><p class="eyebrow">LIVE SYSTEM-TABLE ESTIMATES</p><h2>Spend by principal</h2></div><button id="refresh-spend" class="button secondary">Refresh estimates</button></div>
+            <p class="panel-copy">Monthly and daily totals below are telemetry estimates; source tables refresh at different cadences and do not mirror native Gateway enforcement counters.</p>
+            <div class="table-wrap"><table><thead><tr><th>Principal</th><th>Today · UTC</th><th>Month to date</th><th>Latest event</th></tr></thead><tbody id="spend-rows"></tbody></table></div>
+          </section>
+          <div class="footer-note"><span>PUBLIC ACCELERATOR PREVIEW</span><span id="freshness">Synthetic sample data · no workspace connected</span></div>
+        </section>
+
+        <section id="configuration" class="view">
+          <div class="page-heading compact-heading">
+            <div><p class="eyebrow">DECLARATIVE CONTROL</p><h1>Configuration<br /><em>workbench.</em></h1><p class="lede">Edit the customer-owned YAML, validate it, and inspect the proposed reconciliation before applying.</p></div>
+            <div class="heading-note"><span class="note-index">02</span><span>NO CONFIG IS<br />SAVED BY THE APP.</span></div>
+          </div>
+          <section class="panel editor-panel">
+            <div class="editor-toolbar"><div><span class="file-mark">YML</span><b>customer.yml</b><span class="toolbar-sub">in-memory only</span></div><div class="editor-actions"><button id="load-example" class="button secondary">Load example</button><button id="validate" class="button secondary">Validate</button><button id="make-plan" class="button primary">Generate plan <span>↗</span></button></div></div>
+            <textarea id="config-editor" spellcheck="false" aria-label="Desired state YAML" placeholder="Loading example configuration…"></textarea>
+            <div class="editor-foot"><span>Do not paste credentials or secrets.</span><label class="check-label"><input type="checkbox" id="apply-budgets" /> Include monthly budget changes in apply</label></div>
+          </section>
+          <section class="panel result-panel" id="result-panel" hidden>
+            <div class="panel-heading"><div><p class="eyebrow">OPERATION RESULT</p><h2 id="result-title">Plan</h2></div><button id="clear-result" class="icon-button" aria-label="Clear result">×</button></div>
+            <pre id="result-output"></pre>
+            <div id="apply-controls" class="apply-controls" hidden><input id="apply-confirmation" type="text" placeholder="Type APPLY to confirm" autocomplete="off" /><button id="apply-button" class="button danger">Apply declared changes</button></div>
+          </section>
+        </section>
+
+        <section id="tiers" class="view">
+          <div class="page-heading compact-heading">
+            <div><p class="eyebrow">TIER MEMBERSHIP</p><h1>Move a user<br /><em>between tiers.</em></h1><p class="lede">Preview and apply monthly or runaway tier moves using the configuration in the workbench. Only configured tier groups are changed; the target group is added before old tiers are removed.</p></div>
+            <div class="heading-note"><span class="note-index">03</span><span>PREVIEW FIRST.<br />EVERY MOVE IS AUDITED.</span></div>
+          </div>
+          <section class="panel editor-panel">
+            <div class="tier-form">
+              <label>User email<input id="tier-email" type="email" placeholder="user@example.com" autocomplete="off" /></label>
+              <label>Budget<select id="tier-kind"><option value="runaway">Runaway</option><option value="monthly">Monthly</option></select></label>
+              <label>Target tier group<input id="tier-target" type="text" placeholder="blank = runaway self-raise rule · 'base' = monthly default" autocomplete="off" /></label>
+              <label>Month-to-date spend (optional)<input id="tier-spend" type="number" min="0" step="0.01" placeholder="blank = system-table estimate" /></label>
+            </div>
+            <div class="editor-actions"><button id="tier-preview" class="button primary">Preview move <span>↗</span></button><button id="tier-reset-preview" class="button secondary">Preview monthly runaway reset</button></div>
+          </section>
+          <section class="panel result-panel" id="tier-result-panel" hidden>
+            <div class="panel-heading"><div><p class="eyebrow">TIER RESULT</p><h2 id="tier-result-title">Preview</h2></div></div>
+            <pre id="tier-result-output"></pre>
+            <div id="tier-move-controls" class="apply-controls" hidden><input id="tier-confirmation" type="text" placeholder="Type MOVE to confirm" autocomplete="off" /><button id="tier-move" class="button danger">Apply tier move</button></div>
+            <div id="tier-reset-controls" class="apply-controls" hidden><input id="tier-reset-confirmation" type="text" placeholder="Type RESET to confirm" autocomplete="off" /><button id="tier-reset" class="button danger">Reset runaway tiers</button></div>
+          </section>
+        </section>
+
+        <section id="implementation" class="view">
+          <div class="page-heading compact-heading">
+            <div><p class="eyebrow">POLICY & DATA SOURCES</p><h1>Two budgets.<br /><em>Different controls.</em></h1><p class="lede">The monthly budget and daily runaway tier are deliberately implemented as distinct mechanisms.</p></div>
+            <div class="heading-note"><span class="note-index">03</span><span>EXPLICIT ABOUT<br />WHAT IS ENFORCED.</span></div>
+          </div>
+          <div class="implementation-grid">
+            <article class="panel impl-card"><span class="impl-number">01</span><p class="eyebrow">MONTHLY · NATIVE</p><h2>Account Budget API</h2><p>The accelerator manages Unity AI Gateway monthly thresholds, group overrides, alerts, and optional usage blocking through the documented account budget interface.</p><ul><li>Monthly shared and per-user thresholds</li><li>Declarative reconcile with fetch/modify/write</li><li>Existing alert and scope protections</li></ul><span class="impl-state supported">SUPPORTED BASELINE</span></article>
+            <article class="panel impl-card daily-impl"><span class="impl-number">02</span><p class="eyebrow">DAILY · TIERED POLICY</p><h2>Configurable group ladder</h2><p>The daily policy selects a tier from the configured ladder, then moves the user into that tier's account group. The default step uses <code>monthly cap / 15</code>.</p><ul><li>Tier ladder and group names are customer-configured</li><li>Membership changes use account SCIM</li><li>Daily spend estimate uses public system tables</li></ul><span class="impl-state caveated">BEST-EFFORT TELEMETRY</span></article>
+          </div>
+          <div class="panel architecture-note"><p class="eyebrow">PUBLICATION BOUNDARY</p><p>The internal console's real-time budget-status RPC and employee/org data are intentionally not included. Daily telemetry is calculated from documented Unity Gateway and billing system tables; because those tables can lag, it must not be presented as the native enforcement counter. The daily tier logic is reusable, but daily period enforcement itself is not created by the standard monthly budget API.</p><a href="https://docs.databricks.com/aws/en/ai-gateway/budgets" target="_blank" rel="noreferrer">Unity Gateway budget docs ↗</a><a href="https://docs.databricks.com/aws/en/ai-gateway/cost-observability" target="_blank" rel="noreferrer">Cost observability docs ↗</a></div>
+        </section>
+      </main>
+    </div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

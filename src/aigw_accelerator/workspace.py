@@ -142,7 +142,9 @@ class WorkspaceAutomation:
         )
 
 
-def make_workspace_client(host: str) -> Any:
+def make_workspace_client(host: str, profile: str | None = None) -> Any:
     from databricks.sdk import WorkspaceClient
 
+    if profile:
+        return WorkspaceClient(host=host, profile=profile)
     return WorkspaceClient(host=host)

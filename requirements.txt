@@ -1,0 +1,5 @@
+databricks-sdk>=0.131,<1
+databricks-sql-connector>=3,<5
+fastapi>=0.115,<1
+PyYAML>=6,<7
+uvicorn>=0.30,<1

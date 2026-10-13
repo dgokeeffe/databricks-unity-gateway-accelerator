@@ -17,9 +17,31 @@ groups:
   - name: "aigw-model-users"
     description: "Users allowed to query the standard model service"
     ensure: true
+  # Runaway tier groups must be Databricks-managed account groups (not external
+  # IdP-managed groups). Each maps to an override on the role: runaway budget.
+  - name: "aigw-runaway-limit-750"
+    description: "Runaway tier: $750 month-to-date per-user cap"
+    ensure: true
+  - name: "aigw-runaway-limit-1000"
+    description: "Runaway tier: $1,000 month-to-date per-user cap"
+    ensure: true
+
+daily_raise:
+  # Self-raise policy for the role: runaway budget. Next tier >= month-to-date
+  # spend + monthly cap / divisor, offered when less than the trigger remains.
+  # When enabled, tiers must exactly match the runaway budget's overrides.
+  enabled: false
+  monthly_to_daily_divisor: 15
+  raise_trigger_remaining_usd: 100
+  tiers:
+    - group: "aigw-runaway-limit-750"
+      limit_usd: "750"
+    - group: "aigw-runaway-limit-1000"
+      limit_usd: "1000"
 
 budgets:
   - id: "<EXISTING_BUDGET_ID>"
+    role: "monthly"
     display_name: "<BUDGET_DISPLAY_NAME>"
     resource_type: "BUDGET_RESOURCE_TYPE_UNITY_AI_GATEWAY"
     workspace_ids: [<WORKSPACE_ID>]
@@ -42,6 +64,25 @@ budgets:
       - group: "aigw-budget-elevated"
         amount_usd: "1500"
 
+  # Runaway budget: a second MONTH budget over the same scope. Omit id to create
+  # it on apply, then pin the returned id here.
+  - display_name: "<RUNAWAY_BUDGET_DISPLAY_NAME>"
+    role: "runaway"
+    resource_type: "BUDGET_RESOURCE_TYPE_UNITY_AI_GATEWAY"
+    workspace_ids: [<WORKSPACE_ID>]
+    tags:
+      team: ["engineering"]
+      environment: ["production"]
+    per_user_threshold:
+      amount_usd: "500"
+      email_recipients: ["ai-platform@example.com"]
+      block: true
+    overrides:
+      - group: "aigw-runaway-limit-750"
+        amount_usd: "750"
+      - group: "aigw-runaway-limit-1000"
+        amount_usd: "1000"
+
 # Model Services are workspace API resources backed by Unity Catalog.
 # payload is sent to the documented model-services API after plan validation.
 model_services:
@@ -58,15 +99,22 @@ model_services:
       cost_tier: "standard"
     payload:
       comment: "Standard governed model service"
-      destinations:
-        - name: "primary"
-          model: "system.ai.<MODEL_SERVICE>"
-      routes:
-        strategy: "fallback"
-        destinations: ["primary"]
-      rate_limits:
-        qpm: 300
-        tpm: 100000
+      config:
+        routing:
+          destinations:
+            - name: "primary"
+              destination_type: "DESTINATION_TYPE_PAY_PER_TOKEN_FOUNDATION_MODEL"
+              traffic_percentage: 100
+              pay_per_token_config:
+                model: "models/system.ai.<FOUNDATION_MODEL>"
+        # Payload logging. parent/table_name_prefix are immutable once created.
+        inference_table:
+          parent: "schemas/<GOVERNED_CATALOG>.ai"
+          table_name_prefix: "standard_models"
+        rate_limits:
+          - key: "RATE_LIMIT_KEY_SERVICE"
+            renewal_period: "RATE_LIMIT_RENEWAL_PERIOD_MINUTE"
+            requests: "300"
 
 # Model service access is managed through Unity Catalog grants.
 # This accelerator plans grants and applies only explicitly declared grants.

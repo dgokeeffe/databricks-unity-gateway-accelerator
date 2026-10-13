@@ -1,0 +1,20 @@
+bundle:
+  name: unity-ai-gateway-accelerator
+
+include:
+  - resources/*.yml
+
+variables:
+  app_name:
+    default: aigw-gov-console-dev
+
+targets:
+  dev:
+    default: true
+    mode: development
+    variables:
+      app_name: aigw-gov-console-dev
+  prod:
+    mode: production
+    variables:
+      app_name: aigw-gov-console

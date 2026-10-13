@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .account import AccountAutomation, make_account_client
 from .config import ConfigError, load_config
@@ -60,7 +60,8 @@ def _enum_value(value: Any) -> Any:
 
 def _decimal_text(value: Any) -> str:
     try:
-        return format(Decimal(str(value)), "f")
+        # normalize() so "100" and "100.000000000000000000" compare equal.
+        return format(Decimal(str(value)).normalize(), "f")
     except (InvalidOperation, ValueError):
         return str(value)
 
@@ -201,7 +202,8 @@ def _discover(config: dict[str, Any]) -> tuple[AccountAutomation, list[dict[str,
 def build_plan(config: dict[str, Any]) -> str:
     _, current_groups, current_budgets = _discover(config)
     plan_lines = ["Account groups:"]
-    plan_lines.append(format_plan(plan_groups(config.get("groups", []), current_groups)))
+    managed_groups = [group for group in config.get("groups", []) if group.get("ensure", True)]
+    plan_lines.append(format_plan(plan_groups(managed_groups, current_groups)))
 
     current_by_id = {
         str(getattr(budget, "budget_configuration_id", "")): _budget_dict(budget)
@@ -214,7 +216,7 @@ def build_plan(config: dict[str, Any]) -> str:
 
     for service in config.get("model_services", []):
         workspace = WorkspaceAutomation(
-            make_workspace_client(service["workspace_host"]), int(service["workspace_id"])
+            make_workspace_client(service["workspace_host"], service.get("profile")), int(service["workspace_id"])
         )
         existing = workspace.list_model_services(service["catalog"], service["schema"])
         plan_lines.append(
@@ -224,7 +226,7 @@ def build_plan(config: dict[str, Any]) -> str:
 
     for provider in config.get("model_provider_services", []):
         workspace = WorkspaceAutomation(
-            make_workspace_client(provider["workspace_host"]), int(provider["workspace_id"])
+            make_workspace_client(provider["workspace_host"], provider.get("profile")), int(provider["workspace_id"])
         )
         existing = workspace.list_model_provider_services(
             provider["catalog"], provider["schema"]
@@ -241,6 +243,26 @@ def build_plan(config: dict[str, Any]) -> str:
             f"Grant {grant['workspace_host']} {grant['securable_type']} "
             f"{grant['full_name']}: {grant.get('grants', [])}"
         )
+    daily_raise = config.get("daily_raise", {})
+    if daily_raise:
+        tiers = daily_raise.get("tiers", [])
+        state = "enabled" if daily_raise.get("enabled") else "configured but disabled"
+        plan_lines.append(
+            "Runaway tier policy (tier groups mapped to the role: runaway budget's "
+            f"per-user overrides): {state}; monthly-cap divisor="
+            f"{daily_raise.get('monthly_to_daily_divisor', 15)}; raise trigger remaining="
+            f"${daily_raise.get('raise_trigger_remaining_usd', 100)}; tiers={len(tiers)}. "
+            "The runaway budget enforces; telemetry estimates only inform tier selection."
+        )
+        if daily_raise.get("enabled"):
+            current_group_names = {group.get("displayName") for group in current_groups}
+            missing_tiers = sorted(
+                tier["group"]
+                for tier in tiers
+                if tier["group"] not in current_group_names
+            )
+            if missing_tiers:
+                plan_lines.append("MISSING daily tier groups: " + ", ".join(missing_tiers))
     if config.get("governed_tags"):
         plan_lines.append(
             "Governed tags: declared as a capability-gated phase; no Model Service assignment "
@@ -257,7 +279,18 @@ def _ensure_groups(account: AccountAutomation, config: dict[str, Any]) -> dict[s
         actual = account.ensure_group(group["name"], group.get("description", ""))
         if actual.get("id"):
             principal_ids[group["name"]] = int(actual["id"])
+            _ensure_members(account, str(actual["id"]), group)
     return principal_ids
+
+
+def _ensure_members(account: AccountAutomation, group_id: str, group: dict[str, Any]) -> None:
+    """Additively ensure declared members. Never removes undeclared members."""
+    for email in group.get("members", []) or []:
+        user_id = account.find_user_id(email)
+        if user_id is None:
+            raise ConfigError(f"group {group['name']}: no account user for {email}")
+        if not account.group_has_member(group_id, user_id):
+            account.patch_group_member(group_id, user_id, add=True)
 
 
 def _apply_budgets(
@@ -296,10 +329,43 @@ def _apply_budgets(
             )
 
 
+def _desired_inference_table(service: dict[str, Any]) -> dict[str, Any] | None:
+    return (service.get("payload", {}).get("config") or {}).get("inference_table")
+
+
+def _ensure_inference_table(
+    workspace: WorkspaceAutomation, qualified: str, service: dict[str, Any]
+) -> None:
+    """Enable payload logging on an existing service (additive only).
+
+    parent/table_name_prefix are immutable once the table exists, so a
+    mismatch is reported rather than replaced.
+    """
+    desired = _desired_inference_table(service)
+    if not desired:
+        return
+    current = (workspace.get_model_service(qualified).get("config") or {}).get(
+        "inference_table"
+    )
+    if current and not current.get("disabled"):
+        for key in ("parent", "table_name_prefix"):
+            if key in desired and current.get(key) not in (None, desired[key]):
+                raise ConfigError(
+                    f"inference_table.{key} on {qualified} is immutable once created: "
+                    f"{current.get(key)!r} != {desired[key]!r}"
+                )
+        return
+    workspace.update_model_service(
+        qualified,
+        {"name": f"model-services/{qualified}", "config": {"inference_table": desired}},
+        ["config.inference_table"],
+    )
+
+
 def _apply_services_and_grants(config: dict[str, Any]) -> None:
     for provider in config.get("model_provider_services", []):
         workspace = WorkspaceAutomation(
-            make_workspace_client(provider["workspace_host"]), int(provider["workspace_id"])
+            make_workspace_client(provider["workspace_host"], provider.get("profile")), int(provider["workspace_id"])
         )
         existing = workspace.list_model_provider_services(
             provider["catalog"], provider["schema"]
@@ -332,7 +398,7 @@ def _apply_services_and_grants(config: dict[str, Any]) -> None:
 
     for service in config.get("model_services", []):
         workspace = WorkspaceAutomation(
-            make_workspace_client(service["workspace_host"]), int(service["workspace_id"])
+            make_workspace_client(service["workspace_host"], service.get("profile")), int(service["workspace_id"])
         )
         existing = workspace.list_model_services(service["catalog"], service["schema"])
         qualified = ".".join([service["catalog"], service["schema"], service["name"]])
@@ -402,6 +468,7 @@ def _apply_services_and_grants(config: dict[str, Any]) -> None:
                     {"name": f"model-services/{qualified}", "config": update_config},
                     update_fields,
                 )
+            _ensure_inference_table(workspace, qualified, service)
 
     declared_services = {
         (
@@ -430,7 +497,7 @@ def _apply_services_and_grants(config: dict[str, Any]) -> None:
                 f"Grant does not match a declared service in the same workspace: {grant}"
             )
         workspace = WorkspaceAutomation(
-            make_workspace_client(grant["workspace_host"]), int(grant["workspace_id"])
+            make_workspace_client(grant["workspace_host"], grant.get("profile")), int(grant["workspace_id"])
         )
         workspace.update_grants(
             grant["securable_type"], grant["full_name"], grant.get("grants", []), revoke=False
@@ -500,6 +567,49 @@ def write_audit_record(
     return path
 
 
+def apply_config(
+    config: dict[str, Any],
+    *,
+    apply_budgets: bool = False,
+    audit_writer: Callable[..., Any] | None = None,
+) -> tuple[Any, Any]:
+    """Apply declared groups, budgets (optionally), services and grants.
+
+    ``audit_writer`` receives ``config``, ``status``, ``apply_budgets``, and
+    optional ``error`` keyword arguments. It is called before and after writes
+    so a caller can persist a durable audit record before mutation begins.
+    """
+    writer = audit_writer or write_audit_record
+    started = writer(config, status="started", apply_budgets=apply_budgets)
+    try:
+        account, _, current_budgets = _discover(config)
+        principal_ids = _ensure_groups(account, config)
+        if apply_budgets:
+            _apply_budgets(account, config, current_budgets, principal_ids)
+        _apply_services_and_grants(config)
+    except Exception as exc:
+        try:
+            writer(
+                config,
+                status="failed",
+                apply_budgets=apply_budgets,
+                error=type(exc).__name__,
+            )
+        except Exception as audit_error:
+            raise RuntimeError(
+                "apply failed and the failure audit record could not be persisted"
+            ) from audit_error
+        raise
+    try:
+        completed = writer(config, status="succeeded", apply_budgets=apply_budgets)
+    except Exception as audit_error:
+        raise RuntimeError(
+            "apply completed but the completion audit could not be persisted; "
+            "inspect the started audit record and remote state before retrying"
+        ) from audit_error
+    return started, completed
+
+
 def verify_config(config: dict[str, Any]) -> list[str]:
     account, current_groups, current_budgets = _discover(config)
     group_names = {group.get("displayName") for group in current_groups}
@@ -511,6 +621,15 @@ def verify_config(config: dict[str, Any]) -> list[str]:
     for group in config.get("groups", []):
         if group.get("ensure", True) and group["name"] not in group_names:
             failures.append(f"missing group: {group['name']}")
+        elif group.get("members"):
+            actual = account.get_group_by_name(group["name"]) or {}
+            for email in group["members"]:
+                user_id = account.find_user_id(email)
+                if user_id is None or not account.group_has_member(str(actual.get("id")), user_id):
+                    failures.append(f"missing member {email} in group {group['name']}")
+    for tier in config.get("daily_raise", {}).get("tiers", []):
+        if config.get("daily_raise", {}).get("enabled") and tier["group"] not in group_names:
+            failures.append(f"missing daily tier group: {tier['group']}")
     principal_ids = account.principal_ids()
     for budget in config.get("budgets", []):
         if not budget.get("id"):
@@ -552,7 +671,7 @@ def verify_config(config: dict[str, Any]) -> list[str]:
     }
     for service in config.get("model_services", []):
         workspace = WorkspaceAutomation(
-            make_workspace_client(service["workspace_host"]), int(service["workspace_id"])
+            make_workspace_client(service["workspace_host"], service.get("profile")), int(service["workspace_id"])
         )
         qualified = ".".join([service["catalog"], service["schema"], service["name"]])
         current = next(
@@ -570,6 +689,10 @@ def verify_config(config: dict[str, Any]) -> list[str]:
             actual_tags = current.get("endpoint_tags", {})
             if expected_tags and actual_tags != expected_tags:
                 failures.append(f"drifted endpoint_tags: {service['workspace_host']} {qualified}")
+            if _desired_inference_table(service):
+                table = (current.get("config") or {}).get("inference_table") or {}
+                if not table or table.get("disabled") or table.get("is_deleted"):
+                    failures.append(f"missing inference table: {qualified}")
             expected_limits = service.get("payload", {}).get("rate_limits")
             actual_config = current.get("config", {})
             actual_limits = current.get("rate_limits", actual_config.get("rate_limits"))
@@ -578,7 +701,7 @@ def verify_config(config: dict[str, Any]) -> list[str]:
 
     for provider in config.get("model_provider_services", []):
         workspace = WorkspaceAutomation(
-            make_workspace_client(provider["workspace_host"]), int(provider["workspace_id"])
+            make_workspace_client(provider["workspace_host"], provider.get("profile")), int(provider["workspace_id"])
         )
         qualified = ".".join([provider["catalog"], provider["schema"], provider["name"]])
         names = {
@@ -607,7 +730,7 @@ def verify_config(config: dict[str, Any]) -> list[str]:
             failures.append(f"grant is not attached to a declared service: {grant['full_name']}")
             continue
         workspace = WorkspaceAutomation(
-            make_workspace_client(grant["workspace_host"]), int(grant["workspace_id"])
+            make_workspace_client(grant["workspace_host"], grant.get("profile")), int(grant["workspace_id"])
         )
         state = workspace.get_grants(grant["securable_type"], grant["full_name"])
         assignments = {
@@ -637,14 +760,22 @@ def verify_config(config: dict[str, Any]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aigw-accelerator")
-    parser.add_argument("command", choices=["plan", "apply", "verify"])
+    parser.add_argument(
+        "command", choices=["plan", "apply", "verify", "tier-preview", "tier-move", "tier-reset"]
+    )
     parser.add_argument("--config", required=True)
     parser.add_argument("--confirm", action="store_true")
     parser.add_argument("--apply-budgets", action="store_true")
+    parser.add_argument("--email", help="tier-preview/tier-move: account user")
+    parser.add_argument("--kind", choices=["monthly", "runaway"], default="runaway")
+    parser.add_argument("--target", help="tier group name, or 'base' (monthly only)")
+    parser.add_argument("--spend", type=float, help="month-to-date spend for the runaway self-raise rule")
     args = parser.parse_args(argv)
 
     try:
         config = load_config(Path(args.config))
+        if args.command.startswith("tier-"):
+            return _tier_command(config, args)
         if args.command == "plan":
             print(build_plan(config))
             return 0
@@ -659,32 +790,39 @@ def main(argv: list[str] | None = None) -> int:
             print("Refusing to apply without --confirm", file=sys.stderr)
             return 2
 
-        write_audit_record(config, status="started", apply_budgets=args.apply_budgets)
-        try:
-            account, _, current_budgets = _discover(config)
-            principal_ids = _ensure_groups(account, config)
-            if args.apply_budgets:
-                _apply_budgets(account, config, current_budgets, principal_ids)
-            _apply_services_and_grants(config)
-        except Exception as exc:
-            audit_path = write_audit_record(
-                config,
-                status="failed",
-                apply_budgets=args.apply_budgets,
-                error=type(exc).__name__,
-            )
-            print(f"Apply failed. Audit record: {audit_path}", file=sys.stderr)
-            raise
-        audit_path = write_audit_record(
-            config,
-            status="succeeded",
-            apply_budgets=args.apply_budgets,
-        )
+        _, audit_path = apply_config(config, apply_budgets=args.apply_budgets)
         print(f"Apply completed. Audit record: {audit_path}")
         return 0
     except Exception as exc:  # CLI boundary: concise failure without request payloads.
         print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+
+
+def _tier_command(config: dict[str, Any], args: argparse.Namespace) -> int:
+    from . import tiers
+
+    account = AccountAutomation(make_account_client(config["account"]))
+    if args.command == "tier-reset":
+        result = tiers.reset_runaway(account, config, dry_run=not args.confirm)
+        if args.confirm:
+            result["audit"] = str(tiers.write_tier_audit(result, actor="cli", action="reset"))
+        print(json.dumps(result, indent=2))
+        return 0
+    if not args.email:
+        print("--email is required", file=sys.stderr)
+        return 2
+    plan = tiers.preview(
+        account, config, email=args.email, kind=args.kind, target=args.target, spend_usd=args.spend
+    )
+    if args.command == "tier-move":
+        if not args.confirm:
+            print(json.dumps(plan, indent=2))
+            print("Refusing to move without --confirm", file=sys.stderr)
+            return 2
+        plan = tiers.apply_move(account, plan)
+        plan["audit"] = str(tiers.write_tier_audit(plan, actor="cli", action="move"))
+    print(json.dumps(plan, indent=2))
+    return 0
 
 
 if __name__ == "__main__":

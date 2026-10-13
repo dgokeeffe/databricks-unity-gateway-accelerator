@@ -9,3 +9,4 @@ config/customer.yml
 plan-output/
 
 *.egg-info/
+config/daveok.yml

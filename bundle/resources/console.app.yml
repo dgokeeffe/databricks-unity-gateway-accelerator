@@ -1,0 +1,6 @@
+resources:
+  apps:
+    governance_console:
+      name: ${var.app_name}
+      description: Unity AI Gateway governance accelerator console
+      source_code_path: ../..
